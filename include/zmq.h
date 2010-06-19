@@ -82,7 +82,6 @@ ZMQ_EXPORT void zmq_version (int *major, int *minor, int *patch);
 #endif
 
 /*  Native 0MQ error codes.                                                   */
-#define EMTHREAD (ZMQ_HAUSNUMERO + 50)
 #define EFSM (ZMQ_HAUSNUMERO + 51)
 #define ENOCOMPATPROTO (ZMQ_HAUSNUMERO + 52)
 #define ETERM (ZMQ_HAUSNUMERO + 53)
@@ -175,6 +174,7 @@ ZMQ_EXPORT int zmq_term (void *context);
 #define ZMQ_SNDBUF 11
 #define ZMQ_RCVBUF 12
 #define ZMQ_RCVMORE 13
+#define ZMQ_FD 14
 
 /*  Send/recv options.                                                        */
 #define ZMQ_NOBLOCK 1
@@ -222,8 +222,6 @@ ZMQ_EXPORT int zmq_poll (zmq_pollitem_t *items, int nitems, long timeout);
 #define ZMQ_QUEUE 3
 
 ZMQ_EXPORT int zmq_device (int device, void * insocket, void* outsocket);
-
-#undef ZMQ_EXPORT
 
 #ifdef __cplusplus
 }

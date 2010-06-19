@@ -24,7 +24,6 @@
 
 #include "ctx.hpp"
 #include "socket_base.hpp"
-#include "app_thread.hpp"
 #include "io_thread.hpp"
 #include "platform.hpp"
 #include "err.hpp"
@@ -35,7 +34,6 @@
 #endif
 
 zmq::ctx_t::ctx_t (uint32_t io_threads_) :
-    sockets (0),
     terminated (false)
 {
 #ifdef ZMQ_HAVE_WINDOWS
@@ -50,34 +48,39 @@ zmq::ctx_t::ctx_t (uint32_t io_threads_) :
 #endif
 
     //  Initialise the array of signalers.
-    signalers_count = max_app_threads + io_threads_;
-    signalers = (signaler_t**) malloc (sizeof (signaler_t*) * signalers_count);
-    zmq_assert (signalers);
-    memset (signalers, 0, sizeof (signaler_t*) * signalers_count);
+    slot_count = max_sockets + io_threads_;
+    slots = (signaler_t**) malloc (sizeof (signaler_t*) * slot_count);
+    zmq_assert (slots);
 
     //  Create I/O thread objects and launch them.
     for (uint32_t i = 0; i != io_threads_; i++) {
         io_thread_t *io_thread = new (std::nothrow) io_thread_t (this, i);
         zmq_assert (io_thread);
         io_threads.push_back (io_thread);
-        signalers [i] = io_thread->get_signaler ();
+        slots [i] = io_thread->get_signaler ();
         io_thread->start ();
+    }
+
+    //  In the unused part of the slot array, create a list of empty slots.
+    for (uint32_t i = slot_count - 1; i >= io_threads_; i--) {
+        empty_slots.push_back (i);
+        slots [i] = NULL;
     }
 }
 
 int zmq::ctx_t::term ()
 {
-    //  First send stop command to application threads so that any
+    //  First send stop command to sockets so that any
     //  blocking calls are interrupted.
-    for (app_threads_t::size_type i = 0; i != app_threads.size (); i++)
-        app_threads [i].app_thread->stop ();
+    for (sockets_t::size_type i = 0; i != sockets.size (); i++)
+        sockets [i]->stop ();
 
     //  Then mark context as terminated.
-    term_sync.lock ();
+    slot_sync.lock ();
     zmq_assert (!terminated);
     terminated = true;
-    bool destroy = (sockets == 0);
-    term_sync.unlock ();
+    bool destroy = sockets.empty ();
+    slot_sync.unlock ();
     
     //  If there are no sockets open, destroy the context immediately.
     if (destroy)
@@ -88,6 +91,16 @@ int zmq::ctx_t::term ()
 
 zmq::ctx_t::~ctx_t ()
 {
+    //  Check that there are no remaining open sockets.
+    zmq_assert (sockets.empty ());
+
+    //  Get rid of remaining zombie sockets. The mutex provides a memory
+    //  barrier needed to migrate all the zombies into this thread.
+    slot_sync.lock ();
+    while (!zombies.empty ())
+        dezombify ();
+    slot_sync.unlock ();
+
     //  Ask I/O threads to terminate. If stop signal wasn't sent to I/O
     //  thread subsequent invocation of destructor would hang-up.
     for (io_threads_t::size_type i = 0; i != io_threads.size (); i++)
@@ -97,18 +110,10 @@ zmq::ctx_t::~ctx_t ()
     for (io_threads_t::size_type i = 0; i != io_threads.size (); i++)
         delete io_threads [i];
 
-    //  Close all application theads, sockets, io_objects etc.
-    for (app_threads_t::size_type i = 0; i != app_threads.size (); i++)
-        delete app_threads [i].app_thread;
-
-    //  Deallocate all the orphaned pipes.
-    while (!pipes.empty ())
-        delete *pipes.begin ();
-
-    //  Deallocate the array of pointers to signalers. No special work is
+    //  Deallocate the array of slot. No special work is
     //  needed as signalers themselves were deallocated with their
-    //  corresponding (app_/io_) thread objects.
-    free (signalers);
+    //  corresponding io_thread/socket objects.
+    free (slots);
     
 #ifdef ZMQ_HAVE_WINDOWS
     //  On Windows, uninitialise socket layer.
@@ -119,108 +124,70 @@ zmq::ctx_t::~ctx_t ()
 
 zmq::socket_base_t *zmq::ctx_t::create_socket (int type_)
 {
-    app_threads_sync.lock ();
+    slot_sync.lock ();
 
-    //  Find whether the calling thread has app_thread_t object associated
-    //  already. At the same time find an unused app_thread_t so that it can
-    //  be used if there's no associated object for the calling thread.
-    //  Check whether thread ID is already assigned. If so, return it.
-    app_threads_t::size_type unused = app_threads.size ();
-    app_threads_t::size_type current;
-    for (current = 0; current != app_threads.size (); current++) {
-        if (app_threads [current].associated &&
-              thread_t::equal (thread_t::id (), app_threads [current].tid))
-            break;
-        if (!app_threads [current].associated)
-            unused = current;
-    }
+    //  Free the slots, if possible.
+    dezombify ();
 
-    //  If no app_thread_t is associated with the calling thread,
-    //  associate it with one of the unused app_thread_t objects.
-    if (current == app_threads.size ()) {
-
-        //  If all the existing app_threads are already used, create one more.
-        if (unused == app_threads.size ()) {
-
-            //  If max_app_threads limit was reached, return error.
-            if (app_threads.size () == max_app_threads) {
-                app_threads_sync.unlock ();
-                errno = EMTHREAD;
-                return NULL;
-            }
-
-            //  Create the new application thread proxy object.
-            app_thread_info_t info;
-            memset (&info, 0, sizeof (info));
-            info.associated = false;
-            info.app_thread = new (std::nothrow) app_thread_t (this,
-                io_threads.size () + app_threads.size ());
-            zmq_assert (info.app_thread);
-            signalers [io_threads.size () + app_threads.size ()] =
-                info.app_thread->get_signaler ();
-            app_threads.push_back (info);
-        }
-
-        //  Incidentally, this works both when there is an unused app_thread
-        //  and when a new one is created.
-        current = unused;
-
-        //  Associate the selected app_thread with the OS thread.
-        app_threads [current].associated = true;
-        app_threads [current].tid = thread_t::id ();
-    }
-
-    app_thread_t *thread = app_threads [current].app_thread;
-    app_threads_sync.unlock ();
-
-    socket_base_t *s = thread->create_socket (type_);
-    if (!s)
+    //  If max_sockets limit was reached, return error.
+    if (empty_slots.empty ()) {
+        slot_sync.unlock ();
+        errno = EMFILE;
         return NULL;
+    }
 
-    term_sync.lock ();
-    sockets++;
-    term_sync.unlock ();
+    //  Choose a slot for the socket.
+    uint32_t slot = empty_slots.back ();
+    empty_slots.pop_back ();
+
+    //  Create the socket and register its signaler.
+    socket_base_t *s = socket_base_t::create (type_, this, slot);
+    if (!s) {
+        empty_slots.push_back (slot);
+        slot_sync.unlock ();
+        return NULL;
+    }
+    sockets.push_back (s);
+    slots [slot] = s->get_signaler ();
+    
+    slot_sync.unlock ();
 
     return s;
 }
 
-void zmq::ctx_t::destroy_socket ()
+void zmq::ctx_t::destroy_socket (socket_base_t *socket_)
 {
-    //  If zmq_term was already called and there are no more sockets,
-    //  terminate the whole 0MQ infrastructure.
-    term_sync.lock ();
-    zmq_assert (sockets > 0);
-    sockets--;
-    bool destroy = (sockets == 0 && terminated);
-    term_sync.unlock ();
+    slot_sync.lock ();
 
+    //  Zombify the socket. Notice that the lock above provides the memory
+    //  barrier needed to migrate zombie-to-be socket from it's native thread
+    //  to shared data area synchronised by slot_sync.
+    sockets.erase (socket_);
+    zombies.push_back (socket_);
+
+    //  Deallocate zombie sockets, if possible.
+    dezombify ();
+
+    //  Check whether this is final shutdown (zmq_term has been called and there
+    //  are no more open sockets).
+    bool destroy = (sockets.empty () && terminated);
+
+    slot_sync.unlock ();
+
+    //  Terminate the whole 0MQ infrastructure, including any remaining
+    //  zombie sockets.
     if (destroy)
        delete this;
 }
 
-void zmq::ctx_t::no_sockets (app_thread_t *thread_)
+void zmq::ctx_t::send_command (uint32_t slot_, const command_t &command_)
 {
-    app_threads_sync.lock ();
-    app_threads_t::size_type i;
-    for (i = 0; i != app_threads.size (); i++)
-        if (app_threads [i].app_thread == thread_) {
-            app_threads [i].associated = false;
-            break;
-        }
-    zmq_assert (i != app_threads.size ());
-    app_threads_sync.unlock ();
+    slots [slot_]->send (command_);
 }
 
-void zmq::ctx_t::send_command (uint32_t destination_,
-    const command_t &command_)
+bool zmq::ctx_t::recv_command (uint32_t slot_, command_t *command_, bool block_)
 {
-    signalers [destination_]->send (command_);
-}
-
-bool zmq::ctx_t::recv_command (uint32_t thread_slot_,
-    command_t *command_, bool block_)
-{
-    return signalers [thread_slot_]->recv (command_, block_);
+    return slots [slot_]->recv (command_, block_);
 }
 
 zmq::io_thread_t *zmq::ctx_t::choose_io_thread (uint64_t affinity_)
@@ -240,22 +207,6 @@ zmq::io_thread_t *zmq::ctx_t::choose_io_thread (uint64_t affinity_)
     }
     zmq_assert (min_load != -1);
     return io_threads [result];
-}
-
-void zmq::ctx_t::register_pipe (class pipe_t *pipe_)
-{
-    pipes_sync.lock ();
-    bool inserted = pipes.insert (pipe_).second;
-    zmq_assert (inserted);
-    pipes_sync.unlock ();
-}
-
-void zmq::ctx_t::unregister_pipe (class pipe_t *pipe_)
-{
-    pipes_sync.lock ();
-    pipes_t::size_type erased = pipes.erase (pipe_);
-    zmq_assert (erased == 1);
-    pipes_sync.unlock ();
 }
 
 int zmq::ctx_t::register_endpoint (const char *addr_,
@@ -313,5 +264,14 @@ zmq::socket_base_t *zmq::ctx_t::find_endpoint (const char *addr_)
 
      endpoints_sync.unlock ();
      return endpoint;
+}
+
+void zmq::ctx_t::dezombify ()
+{
+    for (zombies_t::size_type i = 0; i != zombies.size ();)
+        if (zombies [i]->dezombify ())
+            zombies.erase (zombies [i]);
+        else
+            i++;
 }
 

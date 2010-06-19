@@ -36,6 +36,7 @@ namespace zmq
 
         void attach (class writer_t *pipe_);
         void detach (class writer_t *pipe_);
+        bool has_pipes ();
         void revive (class writer_t *pipe_);
         int send (zmq_msg_t *msg_, int flags_);
         bool has_out ();

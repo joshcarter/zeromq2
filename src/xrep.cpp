@@ -23,8 +23,8 @@
 #include "err.hpp"
 #include "pipe.hpp"
 
-zmq::xrep_t::xrep_t (class app_thread_t *parent_) :
-    socket_base_t (parent_),
+zmq::xrep_t::xrep_t (class ctx_t *parent_, uint32_t slot_) :
+    socket_base_t (parent_, slot_),
     current_in (0),
     more_in (false),
     current_out (NULL),
@@ -87,6 +87,11 @@ void zmq::xrep_t::xdetach_outpipe (class writer_t *pipe_)
         }
     }
     zmq_assert (false);
+}
+
+bool zmq::xrep_t::xhas_pipes ()
+{
+    return !inpipes.empty () || !outpipes.empty ();
 }
 
 void zmq::xrep_t::xkill (class reader_t *pipe_)

@@ -23,8 +23,8 @@
 #include "err.hpp"
 #include "pipe.hpp"
 
-zmq::req_t::req_t (class app_thread_t *parent_) :
-    socket_base_t (parent_),
+zmq::req_t::req_t (class ctx_t *parent_, uint32_t slot_) :
+    socket_base_t (parent_, slot_),
     active (0),
     current (0),
     receiving_reply (false),
@@ -63,17 +63,20 @@ void zmq::req_t::xdetach_inpipe (class reader_t *pipe_)
     zmq_assert (in_pipes.size () == out_pipes.size ());
 
     //  TODO: The pipe we are awaiting the reply from is detached. What now?
-    //  Return ECONNRESET from subsequent recv?
     if (receiving_reply && pipe_ == reply_pipe) {
         zmq_assert (false);
     }
 
     in_pipes_t::size_type index = in_pipes.index (pipe_);
 
-    if (out_pipes [index])
-        out_pipes [index]->term ();
+    if (!zombie) {
+        if (out_pipes [index])
+            out_pipes [index]->term ();
+        out_pipes.erase (index);
+    }
+
     in_pipes.erase (index);
-    out_pipes.erase (index);
+    
     if (index < active) {
         active--;
         if (current == active)
@@ -90,15 +93,23 @@ void zmq::req_t::xdetach_outpipe (class writer_t *pipe_)
 
     out_pipes_t::size_type index = out_pipes.index (pipe_);
 
-    if (in_pipes [index])
-        in_pipes [index]->term ();
-    in_pipes.erase (index);
+    if (!zombie) {
+        if (in_pipes [index])
+            in_pipes [index]->term ();
+        in_pipes.erase (index);
+    }
+
     out_pipes.erase (index);
     if (index < active) {
         active--;
         if (current == active)
             current = 0;
     }
+}
+
+bool zmq::req_t::xhas_pipes ()
+{
+    return !in_pipes.empty () || !out_pipes.empty ();
 }
 
 void zmq::req_t::xkill (class reader_t *pipe_)

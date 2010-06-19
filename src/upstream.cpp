@@ -22,8 +22,8 @@
 #include "upstream.hpp"
 #include "err.hpp"
 
-zmq::upstream_t::upstream_t (class app_thread_t *parent_) :
-    socket_base_t (parent_)
+zmq::upstream_t::upstream_t (class ctx_t *parent_, uint32_t slot_) :
+    socket_base_t (parent_, slot_)
 {
     options.requires_in = true;
     options.requires_out = false;
@@ -50,6 +50,11 @@ void zmq::upstream_t::xdetach_outpipe (class writer_t *pipe_)
 {
     //  There are no outpipes, so this function shouldn't be called at all.
     zmq_assert (false);
+}
+
+bool zmq::upstream_t::xhas_pipes ()
+{
+    return fq.has_pipes ();
 }
 
 void zmq::upstream_t::xkill (class reader_t *pipe_)

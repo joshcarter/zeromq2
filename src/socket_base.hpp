@@ -33,6 +33,7 @@
 #include "options.hpp"
 #include "stdint.hpp"
 #include "atomic_counter.hpp"
+#include "signaler.hpp"
 #include "stdint.hpp"
 #include "blob.hpp"
 
@@ -44,7 +45,16 @@ namespace zmq
     {
     public:
 
-        socket_base_t (class app_thread_t *parent_);
+        //  Create a socket of a specified type.
+        static socket_base_t *create (int type_, class ctx_t *parent_,
+            uint32_t slot_);
+
+        //  Returns the signaler associated with this socket.
+        signaler_t *get_signaler ();
+
+        //  Interrupt blocking call if the socket is stuck in one.
+        //  This function can be called from a different thread!
+        void stop ();
 
         //  Interface for communication with the API layer.
         int setsockopt (int option_, const void *optval_, size_t optvallen_);
@@ -59,11 +69,6 @@ namespace zmq
         //  it calls this function to let it know it should not shut down
         //  before the command is delivered.
         void inc_seqnum ();
-
-        //  This function is used by the polling mechanism to determine
-        //  whether the socket belongs to the application thread the poll
-        //  is called from.
-        class app_thread_t *get_thread ();
 
         //  These functions are used by the polling mechanism to determine
         //  which events are to be reported from this socket.
@@ -94,9 +99,13 @@ namespace zmq
         void revive (class reader_t *pipe_);
         void revive (class writer_t *pipe_);
 
+        //  This function should be called only on zombie sockets. It tries
+        //  to deallocate the zombie and returns true is successful.
+        bool dezombify ();
+
     protected:
 
-        //  Destructor is protected. Socket is closed using 'close' function.
+        socket_base_t (class ctx_t *parent_, uint32_t slot_);
         virtual ~socket_base_t ();
 
         //  Pipe management is done by individual socket types.
@@ -104,6 +113,7 @@ namespace zmq
             class writer_t *outpipe_, const blob_t &peer_identity_) = 0;
         virtual void xdetach_inpipe (class reader_t *pipe_) = 0;
         virtual void xdetach_outpipe (class writer_t *pipe_) = 0;
+        virtual bool xhas_pipes () = 0;
         virtual void xkill (class reader_t *pipe_) = 0;
         virtual void xrevive (class reader_t *pipe_) = 0;
         virtual void xrevive (class writer_t *pipe_) = 0;
@@ -119,15 +129,34 @@ namespace zmq
         //  Socket options.
         options_t options;
 
+        //  If true, socket was already closed but not yet deallocated
+        //  because either shutdown is in process or there are still pipes
+        //  attached to the socket.
+        bool zombie;
+
     private:
 
+        //  Processes commands sent to this socket (if any). If 'block' is
+        //  set to true, returns only after at least one command was processed.
+        //  If throttle argument is true, commands are processed at most once
+        //  in a predefined time period. The function returns false is the
+        //  associated context was terminated, true otherwise.
+        bool process_commands (bool block_, bool throttle_);
+
         //  Handlers for incoming commands.
+        void process_stop ();
         void process_own (class owned_t *object_);
         void process_bind (class reader_t *in_pipe_, class writer_t *out_pipe_,
             const blob_t &peer_identity_);
         void process_term_req (class owned_t *object_);
         void process_term_ack ();
         void process_seqnum ();
+
+        //  App thread's signaler object.
+        signaler_t signaler;
+
+        //  Timestamp of when commands were processed the last time.
+        uint64_t last_processing_time;
 
         //  List of all I/O objects owned by this socket. The socket is
         //  responsible for deallocating them before it quits.
@@ -144,12 +173,8 @@ namespace zmq
         //  If true there's a half-read message in the socket.
         bool rcvmore;
 
-        //  Application thread the socket lives in.
-        class app_thread_t *app_thread;
-
-        //  If true, socket is already shutting down. No new work should be
-        //  started.
-        bool shutting_down;
+        //  If true context is already terminated.
+        bool terminated;
 
         //  Sequence number of the last command sent to this object.
         atomic_counter_t sent_seqnum;

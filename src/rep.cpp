@@ -23,8 +23,8 @@
 #include "err.hpp"
 #include "pipe.hpp"
 
-zmq::rep_t::rep_t (class app_thread_t *parent_) :
-    socket_base_t (parent_),
+zmq::rep_t::rep_t (class ctx_t *parent_, uint32_t slot_) :
+    socket_base_t (parent_, slot_),
     active (0),
     current (0),
     sending_reply (false),
@@ -71,11 +71,13 @@ void zmq::rep_t::xdetach_inpipe (class reader_t *pipe_)
         if (current == active)
             current = 0;
     }
-
-    if (out_pipes [index])
-        out_pipes [index]->term ();
     in_pipes.erase (index);
-    out_pipes.erase (index);
+
+    if (!zombie) {
+        if (out_pipes [index])
+            out_pipes [index]->term ();
+        out_pipes.erase (index);
+    }
 }
 
 void zmq::rep_t::xdetach_outpipe (class writer_t *pipe_)
@@ -97,10 +99,18 @@ void zmq::rep_t::xdetach_outpipe (class writer_t *pipe_)
             current = 0;
     }
 
-    if (in_pipes [index])
-        in_pipes [index]->term ();
-    in_pipes.erase (index);
     out_pipes.erase (index);
+
+    if (!zombie) {
+        if (in_pipes [index])
+            in_pipes [index]->term ();
+        in_pipes.erase (index);
+    }
+}
+
+bool zmq::rep_t::xhas_pipes ()
+{
+    return !in_pipes.empty () || !out_pipes.empty ();
 }
 
 void zmq::rep_t::xkill (class reader_t *pipe_)

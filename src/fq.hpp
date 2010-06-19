@@ -37,6 +37,7 @@ namespace zmq
 
         void attach (class reader_t *pipe_);
         void detach (class reader_t *pipe_);
+        bool has_pipes ();
         void kill (class reader_t *pipe_);
         void revive (class reader_t *pipe_);
         int recv (zmq_msg_t *msg_, int flags_);

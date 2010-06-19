@@ -57,6 +57,11 @@ void zmq::lb_t::detach (writer_t *pipe_)
     pipes.erase (pipe_);
 }
 
+bool zmq::lb_t::has_pipes ()
+{
+    return !pipes.empty ();
+}
+
 void zmq::lb_t::revive (writer_t *pipe_)
 {
     //  Move the pipe to the list of active pipes.

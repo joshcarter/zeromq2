@@ -239,7 +239,7 @@ ERRORS
 *EINVAL*::
 The requested socket 'type' is invalid.
 
-*EMTHREAD*::
+*EMFILE*::
 The maximum number of sockets within this 'context' has been exceeded.
 
 

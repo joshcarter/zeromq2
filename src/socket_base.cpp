@@ -23,9 +23,18 @@
 
 #include "../include/zmq.h"
 
-#include "socket_base.hpp"
-#include "app_thread.hpp"
+#include "platform.hpp"
 
+#if defined ZMQ_HAVE_WINDOWS
+#include "windows.hpp"
+#if defined _MSC_VER
+#include <intrin.h>
+#endif
+#else
+#include <unistd.h>
+#endif
+
+#include "socket_base.hpp"
 #include "zmq_listener.hpp"
 #include "zmq_connecter.hpp"
 #include "io_thread.hpp"
@@ -39,15 +48,72 @@
 #include "pgm_sender.hpp"
 #include "pgm_receiver.hpp"
 #include "likely.hpp"
-#include "uuid.hpp"
+#include "pair.hpp"
+#include "pub.hpp"
+#include "sub.hpp"
+#include "req.hpp"
+#include "rep.hpp"
+#include "upstream.hpp"
+#include "downstream.hpp"
+#include "xreq.hpp"
+#include "xrep.hpp"
 
-zmq::socket_base_t::socket_base_t (app_thread_t *parent_) :
-    object_t (parent_),
+//  If the RDTSC is available we use it to prevent excessive
+//  polling for commands. The nice thing here is that it will work on any
+//  system with x86 architecture and gcc or MSVC compiler.
+#if (defined __GNUC__ && (defined __i386__ || defined __x86_64__)) ||\
+    (defined _MSC_VER && (defined _M_IX86 || defined _M_X64))
+#define ZMQ_DELAY_COMMANDS
+#endif
+
+zmq::socket_base_t *zmq::socket_base_t::create (int type_, class ctx_t *parent_,
+    uint32_t slot_)
+{
+    socket_base_t *s = NULL;
+    switch (type_) {
+    case ZMQ_PAIR:
+        s = new (std::nothrow) pair_t (parent_, slot_);
+        break;
+    case ZMQ_PUB:
+        s = new (std::nothrow) pub_t (parent_, slot_);
+        break;
+    case ZMQ_SUB:
+        s = new (std::nothrow) sub_t (parent_, slot_);
+        break;
+    case ZMQ_REQ:
+        s = new (std::nothrow) req_t (parent_, slot_);
+        break;
+    case ZMQ_REP:
+        s = new (std::nothrow) rep_t (parent_, slot_);
+        break;
+    case ZMQ_XREQ:
+        s = new (std::nothrow) xreq_t (parent_, slot_);
+        break;
+    case ZMQ_XREP:
+        s = new (std::nothrow) xrep_t (parent_, slot_);
+        break;       
+    case ZMQ_UPSTREAM:
+        s = new (std::nothrow) upstream_t (parent_, slot_);
+        break;
+    case ZMQ_DOWNSTREAM:
+        s = new (std::nothrow) downstream_t (parent_, slot_);
+        break;
+    default:
+        errno = EINVAL;
+        return NULL;
+    }
+    zmq_assert (s);
+    return s;
+}
+
+zmq::socket_base_t::socket_base_t (ctx_t *parent_, uint32_t slot_) :
+    object_t (parent_, slot_),
+    zombie (false),
+    last_processing_time (0),
     pending_term_acks (0),
     ticks (0),
     rcvmore (false),
-    app_thread (parent_),
-    shutting_down (false),
+    terminated (false),
     sent_seqnum (0),
     processed_seqnum (0),
     next_ordinal (1)
@@ -58,10 +124,21 @@ zmq::socket_base_t::~socket_base_t ()
 {
 }
 
+zmq::signaler_t *zmq::socket_base_t::get_signaler ()
+{
+    return &signaler;
+}
+
+void zmq::socket_base_t::stop ()
+{
+    //  Called by ctx when it is terminated... TODO: Do we need this?
+    send_stop ();
+}
+
 int zmq::socket_base_t::setsockopt (int option_, const void *optval_,
     size_t optvallen_)
 {
-    if (unlikely (app_thread->is_terminated ())) {
+    if (unlikely (terminated)) {
         errno = ETERM;
         return -1;
     }
@@ -79,7 +156,7 @@ int zmq::socket_base_t::setsockopt (int option_, const void *optval_,
 int zmq::socket_base_t::getsockopt (int option_, void *optval_,
     size_t *optvallen_)
 {
-    if (unlikely (app_thread->is_terminated ())) {
+    if (unlikely (terminated)) {
         errno = ETERM;
         return -1;
     }
@@ -94,12 +171,22 @@ int zmq::socket_base_t::getsockopt (int option_, void *optval_,
         return 0;
     }
 
+    if (option_ == ZMQ_FD) {
+        if (*optvallen_ < sizeof (fd_t)) {
+            errno = EINVAL;
+            return -1;
+        }
+        *((fd_t*) optval_) = signaler.get_fd ();
+        *optvallen_ = sizeof (fd_t);
+        return 0;
+    }
+
     return options.getsockopt (option_, optval_, optvallen_);
 }
 
 int zmq::socket_base_t::bind (const char *addr_)
 {
-    if (unlikely (app_thread->is_terminated ())) {
+    if (unlikely (terminated)) {
         errno = ETERM;
         return -1;
     }
@@ -159,7 +246,7 @@ int zmq::socket_base_t::bind (const char *addr_)
 
 int zmq::socket_base_t::connect (const char *addr_)
 {
-    if (unlikely (app_thread->is_terminated ())) {
+    if (unlikely (terminated)) {
         errno = ETERM;
         return -1;
     }
@@ -348,7 +435,7 @@ int zmq::socket_base_t::connect (const char *addr_)
 int zmq::socket_base_t::send (::zmq_msg_t *msg_, int flags_)
 {
     //  Process pending commands, if any.
-    if (unlikely (!app_thread->process_commands (false, true))) {
+    if (unlikely (!process_commands (false, true))) {
         errno = ETERM;
         return -1;
     }
@@ -372,7 +459,7 @@ int zmq::socket_base_t::send (::zmq_msg_t *msg_, int flags_)
     while (rc != 0) {
         if (errno != EAGAIN)
             return -1;
-        if (unlikely (!app_thread->process_commands (true, false))) {
+        if (unlikely (!process_commands (true, false))) {
             errno = ETERM;
             return -1;
         }
@@ -396,7 +483,7 @@ int zmq::socket_base_t::recv (::zmq_msg_t *msg_, int flags_)
     //  described above) from the one used by 'send'. This is because counting
     //  ticks is more efficient than doing rdtsc all the time.
     if (++ticks == inbound_poll_rate) {
-        if (unlikely (!app_thread->process_commands (false, false))) {
+        if (unlikely (!process_commands (false, false))) {
             errno = ETERM;
             return -1;
         }
@@ -420,7 +507,7 @@ int zmq::socket_base_t::recv (::zmq_msg_t *msg_, int flags_)
     if (flags_ & ZMQ_NOBLOCK) {
         if (errno != EAGAIN)
             return -1;
-        if (unlikely (!app_thread->process_commands (false, false))) {
+        if (unlikely (!process_commands (false, false))) {
             errno = ETERM;
             return -1;
         }
@@ -440,7 +527,7 @@ int zmq::socket_base_t::recv (::zmq_msg_t *msg_, int flags_)
     while (rc != 0) {
         if (errno != EAGAIN)
             return -1;
-        if (unlikely (!app_thread->process_commands (true, false))) {
+        if (unlikely (!process_commands (true, false))) {
             errno = ETERM;
             return -1;
         }
@@ -456,10 +543,7 @@ int zmq::socket_base_t::recv (::zmq_msg_t *msg_, int flags_)
 
 int zmq::socket_base_t::close ()
 {
-    shutting_down = true;
-
-    //  Let the thread know that the socket is no longer available.
-    app_thread->remove_socket (this);
+    zombie = true;
 
     //  Pointer to the context must be retrieved before the socket is
     //  deallocated. Afterwards it is not available.
@@ -473,7 +557,7 @@ int zmq::socket_base_t::close ()
     //  Wait till all undelivered commands are delivered. This should happen
     //  very quickly. There's no way to wait here for extensive period of time.
     while (processed_seqnum != sent_seqnum.get ())
-        app_thread->process_commands (true, false);
+        process_commands (true, false);
 
     while (true) {
 
@@ -495,7 +579,7 @@ int zmq::socket_base_t::close ()
 
         //  Process commands till we get all the termination acknowledgements.
         while (pending_term_acks)
-            app_thread->process_commands (true, false);
+            process_commands (true, false);
     }
 
     //  Check whether there are no session leaks.
@@ -504,11 +588,9 @@ int zmq::socket_base_t::close ()
     zmq_assert (unnamed_sessions.empty ());
     sessions_sync.unlock ();
 
-    delete this;
-
-    //  This function must be called after the socket is completely deallocated
-    //  as it may cause termination of the whole 0MQ infrastructure.
-    ctx->destroy_socket ();
+    //  This function will destroy this socket so nothing else should
+    //  be done with 'this' afterwards.
+    ctx->destroy_socket (this);
 
     return 0;
 }
@@ -517,11 +599,6 @@ void zmq::socket_base_t::inc_seqnum ()
 {
     //  NB: This function may be called from a different thread!
     sent_seqnum.add (1);
-}
-
-zmq::app_thread_t *zmq::socket_base_t::get_thread ()
-{
-    return app_thread;
 }
 
 bool zmq::socket_base_t::has_in ()
@@ -622,6 +699,24 @@ void zmq::socket_base_t::revive (writer_t *pipe_)
     xrevive (pipe_);
 }
 
+bool zmq::socket_base_t::dezombify ()
+{
+    zmq_assert (zombie);
+
+    //  Process any commands from other threads/sockets that may be available
+    //  at the moment.
+    process_commands (false, false);
+
+    //  If there are no more pipes attached, we can kill the zombie.
+    if (!xhas_pipes ()) {
+        delete this;
+        return true;
+    }
+
+    //  The zombie remains alive.
+    return false;
+}
+
 void zmq::socket_base_t::attach_pipes (class reader_t *inpipe_,
     class writer_t *outpipe_, const blob_t &peer_identity_)
 {
@@ -629,16 +724,7 @@ void zmq::socket_base_t::attach_pipes (class reader_t *inpipe_,
         inpipe_->set_endpoint (this);
     if (outpipe_)
         outpipe_->set_endpoint (this);
-
-    //  If the peer haven't specified it's identity, let's generate one.
-    if (peer_identity_.size ()) {
-        xattach_pipes (inpipe_, outpipe_, peer_identity_);
-    }
-    else {
-        blob_t identity (0, 1);
-        identity += uuid_t ().to_blob ();
-        xattach_pipes (inpipe_, outpipe_, identity);
-    }
+    xattach_pipes (inpipe_, outpipe_, peer_identity_);
 }
 
 void zmq::socket_base_t::detach_inpipe (class reader_t *pipe_)
@@ -651,6 +737,63 @@ void zmq::socket_base_t::detach_outpipe (class writer_t *pipe_)
 {
     xdetach_outpipe (pipe_);
     pipe_->set_endpoint (NULL); // ?
+}
+
+bool zmq::socket_base_t::process_commands (bool block_, bool throttle_)
+{
+    bool received;
+    command_t cmd;
+    if (block_) {
+        received = signaler.recv (&cmd, true);
+        zmq_assert (received);
+    }   
+    else {
+
+#if defined ZMQ_DELAY_COMMANDS
+        //  Optimised version of command processing - it doesn't have to check
+        //  for incoming commands each time. It does so only if certain time
+        //  elapsed since last command processing. Command delay varies
+        //  depending on CPU speed: It's ~1ms on 3GHz CPU, ~2ms on 1.5GHz CPU
+        //  etc. The optimisation makes sense only on platforms where getting
+        //  a timestamp is a very cheap operation (tens of nanoseconds).
+        if (throttle_) {
+
+            //  Get timestamp counter.
+#if defined __GNUC__
+            uint32_t low;
+            uint32_t high;
+            __asm__ volatile ("rdtsc" : "=a" (low), "=d" (high));
+            uint64_t current_time = (uint64_t) high << 32 | low;
+#elif defined _MSC_VER
+            uint64_t current_time = __rdtsc ();
+#else
+#error
+#endif
+
+            //  Check whether certain time have elapsed since last command
+            //  processing.
+            if (current_time - last_processing_time <= max_command_delay)
+                return !terminated;
+            last_processing_time = current_time;
+        }
+#endif
+
+        //  Check whether there are any commands pending for this thread.
+        received = signaler.recv (&cmd, false);
+    }
+
+    //  Process all the commands available at the moment.
+    while (received) {
+        cmd.destination->process_command (cmd);
+        received = signaler.recv (&cmd, false);
+    }
+
+    return !terminated;
+}
+
+void zmq::socket_base_t::process_stop ()
+{
+    terminated = true;
 }
 
 void zmq::socket_base_t::process_own (owned_t *object_)
@@ -668,7 +811,7 @@ void zmq::socket_base_t::process_term_req (owned_t *object_)
 {
     //  When shutting down we can ignore termination requests from owned
     //  objects. They are going to be terminated anyway.
-    if (shutting_down)
+    if (zombie)
         return;
 
     //  If I/O object is well and alive ask it to terminate.

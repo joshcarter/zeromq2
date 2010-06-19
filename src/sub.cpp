@@ -24,8 +24,8 @@
 #include "sub.hpp"
 #include "err.hpp"
 
-zmq::sub_t::sub_t (class app_thread_t *parent_) :
-    socket_base_t (parent_),
+zmq::sub_t::sub_t (class ctx_t *parent_, uint32_t slot_) :
+    socket_base_t (parent_, slot_),
     has_message (false),
     more (false)
 {
@@ -56,6 +56,11 @@ void zmq::sub_t::xdetach_outpipe (class writer_t *pipe_)
 {
     //  SUB socket is read-only thus there should be no outpipes.
     zmq_assert (false);
+}
+
+bool zmq::sub_t::xhas_pipes ()
+{
+    return fq.has_pipes ();
 }
 
 void zmq::sub_t::xkill (class reader_t *pipe_)

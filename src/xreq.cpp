@@ -22,8 +22,8 @@
 #include "xreq.hpp"
 #include "err.hpp"
 
-zmq::xreq_t::xreq_t (class app_thread_t *parent_) :
-    socket_base_t (parent_),
+zmq::xreq_t::xreq_t (class ctx_t *parent_, uint32_t slot_) :
+    socket_base_t (parent_, slot_),
     dropping (false)
 {
     options.requires_in = true;
@@ -52,6 +52,11 @@ void zmq::xreq_t::xdetach_outpipe (class writer_t *pipe_)
 {
     zmq_assert (pipe_);
     lb.detach (pipe_);
+}
+
+bool zmq::xreq_t::xhas_pipes ()
+{
+    return fq.has_pipes () || lb.has_pipes ();
 }
 
 void zmq::xreq_t::xkill (class reader_t *pipe_)

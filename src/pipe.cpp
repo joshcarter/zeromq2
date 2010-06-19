@@ -38,8 +38,6 @@ zmq::reader_t::reader_t (object_t *parent_,
 
 zmq::reader_t::~reader_t ()
 {
-    if (pipe)
-        unregister_pipe (pipe);
 }
 
 void zmq::reader_t::set_pipe (pipe_t *pipe_)
@@ -47,7 +45,6 @@ void zmq::reader_t::set_pipe (pipe_t *pipe_)
     zmq_assert (!pipe);
     pipe = pipe_;
     peer = &pipe->writer;
-    register_pipe (pipe);
 }
 
 bool zmq::reader_t::check_read ()
@@ -176,6 +173,7 @@ void zmq::writer_t::rollback ()
     while (pipe->unwrite (&msg)) {
         zmq_assert (msg.flags & ZMQ_MSG_MORE);
         zmq_msg_close (&msg);
+        msgs_written--;
     }
 
     if (stalled && endpoint != NULL && !pipe_full()) {

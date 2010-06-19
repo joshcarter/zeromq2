@@ -57,6 +57,11 @@ void zmq::fq_t::detach (reader_t *pipe_)
     pipes.erase (pipe_);
 }
 
+bool zmq::fq_t::has_pipes ()
+{
+    return !pipes.empty ();
+}
+
 void zmq::fq_t::kill (reader_t *pipe_)
 {
     //  Move the pipe to the list of inactive pipes.

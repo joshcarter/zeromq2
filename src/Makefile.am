@@ -49,7 +49,7 @@ endif
 
 nodist_libzmq_la_SOURCES = $(pgm_sources)
 
-libzmq_la_SOURCES = app_thread.hpp \
+libzmq_la_SOURCES = \
     atomic_counter.hpp \
     atomic_ptr.hpp \
     blob.hpp \
@@ -120,7 +120,6 @@ libzmq_la_SOURCES = app_thread.hpp \
     zmq_engine.hpp \
     zmq_init.hpp \
     zmq_listener.hpp \
-    app_thread.cpp \
     command.cpp \
     ctx.cpp \
     devpoll.cpp \

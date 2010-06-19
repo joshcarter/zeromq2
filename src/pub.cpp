@@ -24,8 +24,8 @@
 #include "msg_content.hpp"
 #include "pipe.hpp"
 
-zmq::pub_t::pub_t (class app_thread_t *parent_) :
-    socket_base_t (parent_),
+zmq::pub_t::pub_t (class ctx_t *parent_, uint32_t slot_) :
+    socket_base_t (parent_, slot_),
     active (0)
 {
     options.requires_in = false;
@@ -60,6 +60,11 @@ void zmq::pub_t::xdetach_outpipe (class writer_t *pipe_)
     if (pipes.index (pipe_) < active)
         active--;
     pipes.erase (pipe_);
+}
+
+bool zmq::pub_t::xhas_pipes ()
+{
+    return !pipes.empty ();
 }
 
 void zmq::pub_t::xkill (class reader_t *pipe_)

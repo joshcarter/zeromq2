@@ -33,7 +33,7 @@ namespace zmq
     {
     public:
 
-        sub_t (class app_thread_t *parent_);
+        sub_t (class ctx_t *parent_, uint32_t slot_);
         ~sub_t ();
 
     protected:
@@ -43,6 +43,7 @@ namespace zmq
             const blob_t &peer_identity_);
         void xdetach_inpipe (class reader_t *pipe_);
         void xdetach_outpipe (class writer_t *pipe_);
+        bool xhas_pipes ();
         void xkill (class reader_t *pipe_);
         void xrevive (class reader_t *pipe_);
         void xrevive (class writer_t *pipe_);

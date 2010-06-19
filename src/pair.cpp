@@ -23,8 +23,8 @@
 #include "err.hpp"
 #include "pipe.hpp"
 
-zmq::pair_t::pair_t (class app_thread_t *parent_) :
-    socket_base_t (parent_),
+zmq::pair_t::pair_t (class ctx_t *parent_, uint32_t slot_) :
+    socket_base_t (parent_, slot_),
     inpipe (NULL),
     outpipe (NULL),
     alive (true)
@@ -60,6 +60,11 @@ void zmq::pair_t::xdetach_outpipe (class writer_t *pipe_)
 {
     zmq_assert (pipe_ == outpipe);
     outpipe = NULL;
+}
+
+bool zmq::pair_t::xhas_pipes ()
+{
+    return inpipe != NULL || outpipe != NULL;
 }
 
 void zmq::pair_t::xkill (class reader_t *pipe_)
