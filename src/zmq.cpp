@@ -639,6 +639,7 @@ int zmq_poll (zmq_pollitem_t *items_, int nitems_, long timeout_)
 #endif
 */
 zmq_assert (false);
+return -1;
 }
 
 int zmq_errno ()
