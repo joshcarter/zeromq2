@@ -181,6 +181,21 @@ int zmq::socket_base_t::getsockopt (int option_, void *optval_,
         return 0;
     }
 
+    if (option_ == ZMQ_EVENTS) {
+        if (*optvallen_ < sizeof (uint32_t)) {
+            errno = EINVAL;
+            return -1;
+        }
+        process_commands(false, false);
+        *((uint32_t*) optval_) = 0;
+        if (has_out ())
+            *((uint32_t*) optval_) |= ZMQ_POLLOUT;
+        if (has_in ())
+            *((uint32_t*) optval_) |= ZMQ_POLLIN;
+        *optvallen_ = sizeof (uint32_t);
+        return 0;
+    }
+
     return options.getsockopt (option_, optval_, optvallen_);
 }
 

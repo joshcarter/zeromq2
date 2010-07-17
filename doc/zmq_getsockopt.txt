@@ -199,6 +199,22 @@ Default value:: 0
 Applicable socket types:: all
 
 
+ZMQ_EVENTS: Retrieve pending socket events
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The 'ZMQ_EVENTS' option shall retrieve pending IN/OUT status for the specified
+'socket'.  A value of zero means that no events are pending. A value of
+'ZMQ_POLLIN' means at least one message may be received from the socket without
+blocking. A value of 'ZMQ_POLLOUT' means at least one message may be sent to
+the socket without blocking. If both IN and OUT events are pending the value
+will be 'ZMQ_POLLOUT|ZMQ_POLLIN'.
+
+[horizontal]
+Option value type:: uint32_t
+Option value unit:: bytes
+Default value:: 0
+Applicable socket types:: all
+
+
 RETURN VALUE
 ------------
 The _zmq_getsockopt()_ function shall return zero if successful. Otherwise it
