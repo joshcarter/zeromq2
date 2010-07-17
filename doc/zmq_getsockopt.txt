@@ -198,6 +198,33 @@ Option value unit:: bytes
 Default value:: 0
 Applicable socket types:: all
 
+ZMQ_FD: Retrieve file descriptor associated with the socket
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The 'ZMQ_EVENTS' option shall retrieve file descriptor associated with the 0MQ
+socket. The only way to use the descriptor is to poll on it for POLLIN. Any
+other usage (including reading and writing data) is illegal and will result
+in undefined behaviour.
+
+The file decriptor can be used to poll for state changes to the socket. From
+the user's perspective the state changes involve messages becoming available
+for receiving or socket becoming available for sending.
+
+There are two points to keep in mind though:
+
+1. There are state changes that are not visible to the user. Thus, the file
+descriptor can signal a state change but neither receiving or sending can get
+unblocked by the state change.
+
+2. The file descriptor is "edge triggered" meaning that each state change is
+reported once only. For example, if a message arrives, file descriptor will
+signal a state change. However, if you don't receive the message and start
+polling on the file descriptor once more it won't signal a state change again.
+
+[horizontal]
+Option value type:: int (POSIX), SOCKET (Windows)
+Option value unit:: N/A
+Default value:: N/A
+Applicable socket types:: all
 
 ZMQ_EVENTS: Retrieve pending socket events
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
