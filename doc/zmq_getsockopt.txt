@@ -198,9 +198,10 @@ Option value unit:: bytes
 Default value:: 0
 Applicable socket types:: all
 
+
 ZMQ_FD: Retrieve file descriptor associated with the socket
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-The 'ZMQ_EVENTS' option shall retrieve file descriptor associated with the 0MQ
+The 'ZMQ_FD' option shall retrieve file descriptor associated with the 0MQ
 socket. The only way to use the descriptor is to poll on it for POLLIN. Any
 other usage (including reading and writing data) is illegal and will result
 in undefined behaviour.
@@ -225,6 +226,7 @@ Option value type:: int (POSIX), SOCKET (Windows)
 Option value unit:: N/A
 Default value:: N/A
 Applicable socket types:: all
+
 
 ZMQ_EVENTS: Retrieve pending socket events
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
