@@ -328,7 +328,6 @@ int zmq_recv (void *s_, zmq_msg_t *msg_, int flags_)
 
 int zmq_poll (zmq_pollitem_t *items_, int nitems_, long timeout_)
 {
-/*
 #if defined ZMQ_HAVE_LINUX || defined ZMQ_HAVE_FREEBSD ||\
     defined ZMQ_HAVE_OPENBSD || defined ZMQ_HAVE_SOLARIS ||\
     defined ZMQ_HAVE_OSX || defined ZMQ_HAVE_QNXNTO ||\
@@ -340,49 +339,29 @@ int zmq_poll (zmq_pollitem_t *items_, int nitems_, long timeout_)
     int npollfds = 0;
     int nsockets = 0;
 
-    zmq::app_thread_t *app_thread = NULL;
-
     for (int i = 0; i != nitems_; i++) {
+        zmq::socket_base_t *s = (zmq::socket_base_t*) items_ [i].socket;
 
-        //  0MQ sockets.
-        if (items_ [i].socket) {
-
-            //  Get the app_thread the socket is living in. If there are two
-            //  sockets in the same pollset with different app threads, fail.
-            zmq::socket_base_t *s = (zmq::socket_base_t*) items_ [i].socket;
-            if (app_thread) {
-                if (app_thread != s->get_thread ()) {
-                    free (pollfds);
-                    errno = EFAULT;
-                    return -1;
-                }
-            }
-            else
-                app_thread = s->get_thread ();
-
-            nsockets++;
-            continue;
+        if (s) {
+	    //  0MQ sockets.
+	    pollfds [npollfds].fd = s->get_signaler ()->get_fd ();
+	    if (pollfds [npollfds].fd == zmq::retired_fd) {
+                free (pollfds);
+                errno = ENOTSUP;
+                return -1;
+	    }
+	    pollfds [npollfds].events = POLLIN;
+	    nsockets++;
         }
+	else {
+	    //  Raw file descriptors.
+            pollfds [npollfds].fd = items_ [i].fd;
+            pollfds [npollfds].events =
+                (items_ [i].events & ZMQ_POLLIN ? POLLIN : 0) |
+                (items_ [i].events & ZMQ_POLLOUT ? POLLOUT : 0);
+	}
 
-        //  Raw file descriptors.
-        pollfds [npollfds].fd = items_ [i].fd;
-        pollfds [npollfds].events =
-            (items_ [i].events & ZMQ_POLLIN ? POLLIN : 0) |
-            (items_ [i].events & ZMQ_POLLOUT ? POLLOUT : 0);
-        npollfds++;
-    }
-
-    //  If there's at least one 0MQ socket in the pollset we have to poll
-    //  for 0MQ commands. If ZMQ_POLL was not set, fail.
-    if (nsockets) {
-        pollfds [npollfds].fd = app_thread->get_signaler ()->get_fd ();
-        if (pollfds [npollfds].fd == zmq::retired_fd) {
-            free (pollfds);
-            errno = ENOTSUP;
-            return -1;
-        }
-        pollfds [npollfds].events = POLLIN;
-        npollfds++;
+	npollfds++;
     }
 
     //  First iteration just check for events, don't block. Waiting would
@@ -401,12 +380,17 @@ int zmq_poll (zmq_pollitem_t *items_, int nitems_, long timeout_)
     while (true) {
 
         //  Process 0MQ commands if needed.
-        if (nsockets && pollfds [npollfds -1].revents & POLLIN)
-            if (!app_thread->process_commands (false, false)) {
-                free (pollfds);
-                errno = ETERM;
-                return -1;
-            }
+        for (int i = 0; nsockets && i != npollfds; i++) {
+	    zmq::socket_base_t *s = (zmq::socket_base_t*) items_ [i].socket;
+
+	    if (s) {
+                if (!s->process_commands (false, false)) {
+                    free (pollfds);
+                    errno = ETERM;
+                    return -1;
+		 }
+	    }
+	}
 
         //  Check for the events.
         int pollfd_pos = 0;
@@ -483,7 +467,6 @@ int zmq_poll (zmq_pollitem_t *items_, int nitems_, long timeout_)
     fd_set pollset_err;
     FD_ZERO (&pollset_err);
 
-    zmq::app_thread_t *app_thread = NULL;
     int nsockets = 0;
     zmq::fd_t maxfd = zmq::retired_fd;
     zmq::fd_t notify_fd = zmq::retired_fd;
@@ -492,19 +475,6 @@ int zmq_poll (zmq_pollitem_t *items_, int nitems_, long timeout_)
 
         //  0MQ sockets.
         if (items_ [i].socket) {
-
-            //  Get the app_thread the socket is living in. If there are two
-            //  sockets in the same pollset with different app threads, fail.
-            zmq::socket_base_t *s = (zmq::socket_base_t*) items_ [i].socket;
-            if (app_thread) {
-                if (app_thread != s->get_thread ()) {
-                    errno = EFAULT;
-                    return -1;
-                }
-            }
-            else
-                app_thread = s->get_thread ();
-
             nsockets++;
             continue;
         }
@@ -523,7 +493,7 @@ int zmq_poll (zmq_pollitem_t *items_, int nitems_, long timeout_)
     //  If there's at least one 0MQ socket in the pollset we have to poll
     //  for 0MQ commands. If ZMQ_POLL was not set, fail.
     if (nsockets) {
-        notify_fd = app_thread->get_signaler ()->get_fd ();
+        notify_fd = s->get_signaler ()->get_fd ();
         if (notify_fd == zmq::retired_fd) {
             errno = ENOTSUP;
             return -1;
@@ -558,7 +528,7 @@ int zmq_poll (zmq_pollitem_t *items_, int nitems_, long timeout_)
 
         //  Process 0MQ commands if needed.
         if (nsockets && FD_ISSET (notify_fd, &inset))
-            if (!app_thread->process_commands (false, false)) {
+            if (!process_commands (false, false)) {
                 errno = ETERM;
                 return -1;
             }
@@ -637,9 +607,6 @@ int zmq_poll (zmq_pollitem_t *items_, int nitems_, long timeout_)
     errno = ENOTSUP;
     return -1;
 #endif
-*/
-zmq_assert (false);
-return -1;
 }
 
 int zmq_errno ()

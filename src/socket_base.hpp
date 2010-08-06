@@ -103,6 +103,13 @@ namespace zmq
         //  to deallocate the zombie and returns true is successful.
         bool dezombify ();
 
+        //  Processes commands sent to this socket (if any). If 'block' is
+        //  set to true, returns only after at least one command was processed.
+        //  If throttle argument is true, commands are processed at most once
+        //  in a predefined time period. The function returns false is the
+        //  associated context was terminated, true otherwise.
+        bool process_commands (bool block_, bool throttle_);
+
     protected:
 
         socket_base_t (class ctx_t *parent_, uint32_t slot_);
@@ -135,13 +142,6 @@ namespace zmq
         bool zombie;
 
     private:
-
-        //  Processes commands sent to this socket (if any). If 'block' is
-        //  set to true, returns only after at least one command was processed.
-        //  If throttle argument is true, commands are processed at most once
-        //  in a predefined time period. The function returns false is the
-        //  associated context was terminated, true otherwise.
-        bool process_commands (bool block_, bool throttle_);
 
         //  Handlers for incoming commands.
         void process_stop ();
